@@ -123,7 +123,6 @@ if PYQT_AVAILABLE:
             super().__init__("XR18 Snapshot Sync", parent)
             self.setObjectName("XR18_Snapshot_Sync_Dock")
 
-            # FIX 2: Enforce a minimum width so the Pop-Out and Close buttons don't overlap
             self.setMinimumWidth(280)
 
             self.main_widget = QtWidgets.QWidget()
@@ -230,12 +229,9 @@ def setup_dock():
     _dock = XR18Dock(main_window)
     main_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, _dock)
 
-    # FIX 1: Aggressively hunt for the Docks menu instead of relying on exact object name
     docks_menu = None
     for menu in main_window.findChildren(QtWidgets.QMenu):
-        menu_title = menu.title().replace(
-            "&", ""
-        )  # Handle alt-key shortcuts like "&Docks"
+        menu_title = menu.title().replace("&", "")
         if menu.objectName() == "viewMenuDocks" or "Docks" in menu_title:
             docks_menu = menu
             break
@@ -257,8 +253,14 @@ def setup_dock():
 # OBS Event Handling
 # ---------------------------------------------------------------------------
 def on_event(event):
+    # Fire when the active scene changes
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED:
         handle_scene_change()
+
+    # Auto-update the UI when scenes are added, removed, or re-ordered
+    elif event == obs.OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED:
+        if _dock:
+            _dock.populate_ui()
 
 
 def handle_scene_change():
