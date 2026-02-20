@@ -13,6 +13,9 @@ Automatically switches to snapshot on your Behringer XR18 mixer whenever the act
    pip install -r requirements.txt
    ```
 2. In OBS, go to **Tools → Scripts** and add `obs_xr18_sync.py`.
+
+- If on Windows -> Make sure to add the Python Install Path\* in Tools _> Scripts _> Python Settings
+
 3. Set your XR18 IP address in the script settings. You can see this from the X-AIR-Edit app on the Setup -> Connection tab next to the model name
 4. Click **Fetch Snapshots from XR18** to load snapshot names.
 5. Assign snapshots to your OBS scenes using the dropdowns.
