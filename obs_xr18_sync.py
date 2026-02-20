@@ -1,18 +1,26 @@
 """
-OBS Studio Python Script – Behringer XR18 Snapshot Sync via OSC
-
-Automatically loads a snapshot on a Behringer XR18 (X Air) whenever
-the active scene changes in OBS. All settings, including dynamic
-snapshot fetching, are configured in the Scripts UI.
-
-Requirements:
-    pip install python-osc
+OBS Studio Python Script – Behringer XR18 Snapshot Sync via OSC & Native Dock (PyQt6)
 """
 
 import json
 import socket
 import time
 import obspython as obs  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Qt / UI Setup (Using PyQt6 for better Linux support)
+# ---------------------------------------------------------------------------
+try:
+    from PyQt6 import QtWidgets, QtCore
+
+    PYQT_AVAILABLE = True
+except ImportError:
+    PYQT_AVAILABLE = False
+    obs.script_log(
+        obs.LOG_WARNING,
+        "PyQt6 is missing! Native dock will not load. Run: sudo apt install python3-pyqt6",
+    )
+
 from pythonosc import udp_client
 from pythonosc.osc_message import OscMessage
 from pythonosc.osc_message_builder import OscMessageBuilder
@@ -24,15 +32,13 @@ _client = None
 _xr18_ip = "192.168.1.15"
 XR18_PORT = 10024
 _enabled = True
-
 _settings = None
+_dock = None
 
 
 # ---------------------------------------------------------------------------
 # OSC / Network Helpers
 # ---------------------------------------------------------------------------
-
-
 def _create_client():
     global _client
     try:
@@ -42,7 +48,6 @@ def _create_client():
 
 
 def fetch_snapshot_names(ip):
-    """Sends OSC requests to fetch all 64 snapshot names from the XR18."""
     names = []
     obs.script_log(obs.LOG_INFO, f"Fetching snapshots from {ip}:{XR18_PORT}...")
 
@@ -51,23 +56,18 @@ def fetch_snapshot_names(ip):
         sock.settimeout(0.5)
         sock.bind(("", 0))
 
-        # Burst out requests with a small delay.
         for i in range(1, 65):
             address = f"/-snap/{i:02d}/name"
             builder = OscMessageBuilder(address=address)
             sock.sendto(builder.build().dgram, (ip, XR18_PORT))
             time.sleep(0.005)
 
-        # Read incoming responses until the socket times out
         while True:
             try:
                 data, _ = sock.recvfrom(1024)
                 try:
                     reply = OscMessage(data)
-                except Exception as parse_exc:
-                    obs.script_log(
-                        obs.LOG_INFO, f"Skipped malformed packet: {parse_exc}"
-                    )
+                except Exception:
                     continue
 
                 addr = reply.address
@@ -87,14 +87,10 @@ def fetch_snapshot_names(ip):
         obs.script_log(obs.LOG_ERROR, f"Network error fetching snapshots: {exc}")
 
     names.sort(key=lambda x: x[0])
-
     if names:
         obs.script_log(obs.LOG_INFO, f"Success! Fetched {len(names)} snapshots.")
     else:
-        obs.script_log(
-            obs.LOG_ERROR,
-            "No snapshots found. Connection timed out or blocked by firewall.",
-        )
+        obs.script_log(obs.LOG_ERROR, "No snapshots found.")
 
     return names
 
@@ -102,7 +98,6 @@ def fetch_snapshot_names(ip):
 def load_snapshot(snapshot_id):
     if _client is None:
         return
-
     osc_index = int(snapshot_id)
     if osc_index < 1 or osc_index > 64:
         return
@@ -114,13 +109,7 @@ def load_snapshot(snapshot_id):
         obs.script_log(obs.LOG_ERROR, f"OSC send failed: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Data Handlers
-# ---------------------------------------------------------------------------
-
-
 def get_cached_snapshots():
-    """Safely pulls the most recently fetched snapshots from OBS internal data."""
     global _settings
     if _settings is not None:
         cached = obs.obs_data_get_string(_settings, "cached_snapshots")
@@ -133,10 +122,115 @@ def get_cached_snapshots():
 
 
 # ---------------------------------------------------------------------------
+# Native OBS Dock UI (PyQt6)
+# ---------------------------------------------------------------------------
+if PYQT_AVAILABLE:
+
+    class XR18Dock(QtWidgets.QDockWidget):
+        def __init__(self, parent=None):
+            super().__init__("XR18 Snapshot Sync", parent)
+            self.setObjectName("XR18_Snapshot_Sync_Dock")
+
+            self.main_widget = QtWidgets.QWidget()
+            self.main_layout = QtWidgets.QVBoxLayout()
+
+            self.fetch_btn = QtWidgets.QPushButton("Fetch Snapshots & Refresh UI")
+            self.fetch_btn.clicked.connect(self.on_fetch_clicked)
+            self.main_layout.addWidget(self.fetch_btn)
+
+            self.scroll = QtWidgets.QScrollArea()
+            self.scroll.setWidgetResizable(True)
+            self.container = QtWidgets.QWidget()
+            self.form_layout = QtWidgets.QFormLayout()
+            self.container.setLayout(self.form_layout)
+            self.scroll.setWidget(self.container)
+
+            self.main_layout.addWidget(self.scroll)
+            self.main_widget.setLayout(self.main_layout)
+            self.setWidget(self.main_widget)
+
+        def on_fetch_clicked(self):
+            global _settings
+            if not _settings:
+                return
+            ip = obs.obs_data_get_string(_settings, "xr18_ip") or "192.168.1.15"
+            fetched = fetch_snapshot_names(ip)
+            if fetched:
+                obs.obs_data_set_string(
+                    _settings, "cached_snapshots", json.dumps(fetched)
+                )
+                self.populate_ui()
+
+        def populate_ui(self):
+            global _settings
+            if not _settings:
+                return
+
+            while self.form_layout.count():
+                item = self.form_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            scene_names = []
+            sources = obs.obs_frontend_get_scenes()
+            if sources:
+                for src in sources:
+                    scene_names.append(obs.obs_source_get_name(src))
+                obs.source_list_release(sources)
+
+            current_snapshots = get_cached_snapshots()
+
+            for sn in scene_names:
+                setting_key = f"map_scene_{sn}"
+                combo = QtWidgets.QComboBox()
+                combo.addItem("(None)", 0)
+
+                current_val = obs.obs_data_get_int(_settings, setting_key)
+                current_idx = 0
+
+                for idx, (snap_id, snap_name) in enumerate(current_snapshots):
+                    combo.addItem(f"{snap_id:02d}: {snap_name}", snap_id)
+                    if snap_id == current_val:
+                        current_idx = idx + 1
+
+                combo.setCurrentIndex(current_idx)
+
+                combo.currentIndexChanged.connect(
+                    lambda index, key=setting_key, cb=combo: obs.obs_data_set_int(
+                        _settings, key, cb.itemData(index)
+                    )
+                )
+
+                self.form_layout.addRow(sn, combo)
+
+
+def setup_dock():
+    global _dock
+    if not PYQT_AVAILABLE or _dock is not None:
+        return
+
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        return
+
+    main_window = None
+    for widget in app.topLevelWidgets():
+        if isinstance(widget, QtWidgets.QMainWindow):
+            main_window = widget
+            break
+
+    if not main_window:
+        return
+
+    _dock = XR18Dock(main_window)
+    # PyQt6 uses stricter Enums than PySide6
+    main_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, _dock)
+    _dock.populate_ui()
+
+
+# ---------------------------------------------------------------------------
 # OBS Event Handling
 # ---------------------------------------------------------------------------
-
-
 def on_event(event):
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED:
         handle_scene_change()
@@ -145,7 +239,6 @@ def on_event(event):
 def handle_scene_change():
     if not _enabled or _settings is None:
         return
-
     current_scene_source = obs.obs_frontend_get_current_scene()
     if current_scene_source is None:
         return
@@ -161,22 +254,15 @@ def handle_scene_change():
 
 
 # ---------------------------------------------------------------------------
-# OBS Script API & UI
+# OBS Script API
 # ---------------------------------------------------------------------------
-
-
 def script_description():
     return (
         "<h2>Behringer XR18 – Snapshot Sync</h2>"
-        "<p>Automatically loads an XR18 snapshot whenever the active OBS scene changes.</p>"
+        "<p>Loads an XR18 snapshot whenever the active OBS scene changes.</p>"
         "<hr/>"
-        "<p><strong>Instructions:</strong></p>"
-        "<ol>"
-        "<li>Set your XR18 IP.</li>"
-        "<li>Click <strong>Fetch Snapshots from XR18</strong> to populate the menus.</li>"
-        "<li>Use the dropdowns to assign snapshots.</li>"
-        "<li><strong>IMPORTANT:</strong> If you add, rename, or delete scenes in OBS, you must click the native <strong>Reload Scripts (↺)</strong> icon at the bottom-left of this window to update the scene list!</li>"
-        "</ol>"
+        "<p><strong>Note:</strong> Mappings are now managed in the native OBS Dock. "
+        "If the dock is closed, use the button below to re-open it.</p>"
     )
 
 
@@ -185,95 +271,48 @@ def script_defaults(settings):
     obs.obs_data_set_default_bool(settings, "enabled", True)
 
 
-def on_fetch_snapshots(props, prop):
-    """Callback for the 'Fetch Snapshots' button."""
-    global _settings
-    if _settings is not None:
-        ip = obs.obs_data_get_string(_settings, "xr18_ip") or "192.168.1.15"
-        fetched = fetch_snapshot_names(ip)
-        if fetched:
-            # Hard-save the fetched list to OBS settings immediately
-            obs.obs_data_set_string(_settings, "cached_snapshots", json.dumps(fetched))
-
-            # Actively reach into the UI to update the existing dropdowns in place
-            scene_names = []
-            sources = obs.obs_frontend_get_scenes()
-            if sources:
-                for src in sources:
-                    scene_names.append(obs.obs_source_get_name(src))
-                obs.source_list_release(sources)
-
-            for sn in scene_names:
-                setting_key = f"map_scene_{sn}"
-                p = obs.obs_properties_get(props, setting_key)
-                if p:
-                    obs.obs_property_list_clear(p)
-                    obs.obs_property_list_add_int(p, "(None)", 0)
-                    for snap_idx, snap_name in fetched:
-                        obs.obs_property_list_add_int(
-                            p, f"{snap_idx:02d}: {snap_name}", snap_idx
-                        )
-
-    # Returning True tells OBS to paint our in-place UI changes
+def on_show_dock(props, prop):
+    global _dock
+    if _dock:
+        _dock.show()
+        _dock.raise_()
     return True
 
 
 def script_properties():
-    """Builds the UI from scratch."""
     props = obs.obs_properties_create()
-
     obs.obs_properties_add_bool(props, "enabled", "Enable plugin")
     obs.obs_properties_add_text(
         props, "xr18_ip", "XR18 IP Address", obs.OBS_TEXT_DEFAULT
     )
-
-    # Action Button
-    obs.obs_properties_add_button(
-        props, "btn_fetch", "Fetch Snapshots from XR18", on_fetch_snapshots
-    )
-
-    obs.obs_properties_add_text(
-        props, "_label_mappings", "── Scene to Snapshot Mappings ──", obs.OBS_TEXT_INFO
-    )
-
-    # Ask OBS for the current master list of scenes
-    scene_names = []
-    sources = obs.obs_frontend_get_scenes()
-    if sources:
-        for src in sources:
-            scene_names.append(obs.obs_source_get_name(src))
-        obs.source_list_release(sources)
-
-    # Pull the most recent safe snapshot data from OBS settings
-    current_snapshots = get_cached_snapshots()
-
-    # Build a dropdown for every scene currently in OBS
-    for sn in scene_names:
-        setting_key = f"map_scene_{sn}"
-        p = obs.obs_properties_add_list(
-            props, setting_key, sn, obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_INT
+    if PYQT_AVAILABLE:
+        obs.obs_properties_add_button(
+            props, "btn_show_dock", "Show Dock Interface", on_show_dock
         )
-
-        obs.obs_property_list_add_int(p, "(None)", 0)
-
-        # Populate the dropdown with whatever is cached
-        for snap_idx, snap_name in current_snapshots:
-            obs.obs_property_list_add_int(p, f"{snap_idx:02d}: {snap_name}", snap_idx)
-
     return props
 
 
 def script_update(settings):
     global _xr18_ip, _enabled, _settings
-
     _settings = settings
     _enabled = obs.obs_data_get_bool(settings, "enabled")
     _xr18_ip = obs.obs_data_get_string(settings, "xr18_ip") or "192.168.1.15"
 
     _create_client()
 
+    if PYQT_AVAILABLE and _dock is None:
+        setup_dock()
+
 
 def script_load(settings):
     global _settings
     _settings = settings
     obs.obs_frontend_add_event_callback(on_event)
+
+
+def script_unload():
+    global _dock
+    if _dock:
+        _dock.setParent(None)
+        _dock.deleteLater()
+        _dock = None
