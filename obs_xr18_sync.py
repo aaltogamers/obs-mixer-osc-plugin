@@ -10,7 +10,7 @@ Requirements:
 """
 
 import json
-import obspython as obs
+import obspython as obs  # type: ignore
 from pythonosc import udp_client
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,6 @@ _enabled = True  # master on/off switch exposed in UI
 # Maximum number of individual scene→snapshot rows shown in the UI.
 # Users who need more can fall back to the JSON editor.
 MAX_SCENE_ROWS = 20
-
 
 # ---------------------------------------------------------------------------
 # OSC helpers
@@ -236,7 +235,7 @@ def script_properties():
 
 def script_update(settings):
     """Called whenever any setting is changed in the UI (or on load)."""
-    global _xr18_ip, _xr18_port, _enabled
+    global _xr18_ip, _xr18_port, _enabled, _scene_map_json
 
     _enabled = obs.obs_data_get_bool(settings, "enabled")
     _xr18_ip = obs.obs_data_get_string(settings, "xr18_ip") or "192.168.1.15"
@@ -244,11 +243,18 @@ def script_update(settings):
 
     _create_client()
 
-    # Rebuild mapping – rows take precedence; if all rows are empty fall
-    # back to the JSON field so users can paste a mapping directly.
-    _build_scene_map_from_rows(settings)
-    if not _scene_map:
+    # Get the JSON currently sitting in the UI text box
+    current_ui_json = obs.obs_data_get_string(settings, "scene_map_json").strip()
+
+    # Detect if the user manually typed into the JSON box by comparing it
+    # to the last generated state we have in memory.
+    if current_ui_json != _scene_map_json.strip() and current_ui_json != "":
+        # The user edited the JSON box; parse it and push the changes up to the UI rows.
         _build_scene_map_from_json(settings)
+    else:
+        # Otherwise, assume the user was using the UI rows. Read the rows and
+        # push the changes down to the JSON box.
+        _build_scene_map_from_rows(settings)
 
     obs.script_log(
         obs.LOG_INFO, f"Settings updated – {len(_scene_map)} mapping(s) active."
