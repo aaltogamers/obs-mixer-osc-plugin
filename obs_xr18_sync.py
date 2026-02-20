@@ -7,11 +7,8 @@ import socket
 import time
 import obspython as obs  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Qt / UI Setup (Using PyQt6 for better Linux support)
-# ---------------------------------------------------------------------------
 try:
-    from PyQt6 import QtWidgets, QtCore
+    from PyQt6 import QtWidgets, QtCore, QtGui
 
     PYQT_AVAILABLE = True
 except ImportError:
@@ -87,11 +84,6 @@ def fetch_snapshot_names(ip):
         obs.script_log(obs.LOG_ERROR, f"Network error fetching snapshots: {exc}")
 
     names.sort(key=lambda x: x[0])
-    if names:
-        obs.script_log(obs.LOG_INFO, f"Success! Fetched {len(names)} snapshots.")
-    else:
-        obs.script_log(obs.LOG_ERROR, "No snapshots found.")
-
     return names
 
 
@@ -131,10 +123,18 @@ if PYQT_AVAILABLE:
             super().__init__("XR18 Snapshot Sync", parent)
             self.setObjectName("XR18_Snapshot_Sync_Dock")
 
+            # FIX 2: Enforce a minimum width so the Pop-Out and Close buttons don't overlap
+            self.setMinimumWidth(280)
+
             self.main_widget = QtWidgets.QWidget()
             self.main_layout = QtWidgets.QVBoxLayout()
 
-            self.fetch_btn = QtWidgets.QPushButton("Fetch Snapshots & Refresh UI")
+            self.fetch_btn = QtWidgets.QPushButton("⟳ Sync XR18 Snapshots")
+            font = self.fetch_btn.font()
+            font.setBold(True)
+            self.fetch_btn.setFont(font)
+            self.fetch_btn.setMinimumHeight(35)
+
             self.fetch_btn.clicked.connect(self.on_fetch_clicked)
             self.main_layout.addWidget(self.fetch_btn)
 
@@ -154,12 +154,17 @@ if PYQT_AVAILABLE:
             if not _settings:
                 return
             ip = obs.obs_data_get_string(_settings, "xr18_ip") or "192.168.1.15"
+            self.fetch_btn.setText("Fetching...")
+            QtWidgets.QApplication.processEvents()
+
             fetched = fetch_snapshot_names(ip)
             if fetched:
                 obs.obs_data_set_string(
                     _settings, "cached_snapshots", json.dumps(fetched)
                 )
                 self.populate_ui()
+
+            self.fetch_btn.setText("⟳ Sync XR18 Snapshots")
 
         def populate_ui(self):
             global _settings
@@ -223,8 +228,28 @@ def setup_dock():
         return
 
     _dock = XR18Dock(main_window)
-    # PyQt6 uses stricter Enums than PySide6
     main_window.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, _dock)
+
+    # FIX 1: Aggressively hunt for the Docks menu instead of relying on exact object name
+    docks_menu = None
+    for menu in main_window.findChildren(QtWidgets.QMenu):
+        menu_title = menu.title().replace(
+            "&", ""
+        )  # Handle alt-key shortcuts like "&Docks"
+        if menu.objectName() == "viewMenuDocks" or "Docks" in menu_title:
+            docks_menu = menu
+            break
+
+    if docks_menu:
+        toggle_action = _dock.toggleViewAction()
+        toggle_action.setText("XR18 Snapshot Sync")
+        docks_menu.addAction(toggle_action)
+    else:
+        obs.script_log(
+            obs.LOG_WARNING,
+            "Could not locate the 'Docks' menu to add the toggle action.",
+        )
+
     _dock.populate_ui()
 
 
@@ -261,8 +286,8 @@ def script_description():
         "<h2>Behringer XR18 – Snapshot Sync</h2>"
         "<p>Loads an XR18 snapshot whenever the active OBS scene changes.</p>"
         "<hr/>"
-        "<p><strong>Note:</strong> Mappings are now managed in the native OBS Dock. "
-        "If the dock is closed, use the button below to re-open it.</p>"
+        "<p><strong>Note:</strong> Mappings are now managed via a native OBS Dock. "
+        "You can show or hide it using the <strong>Docks</strong> menu at the top of OBS.</p>"
     )
 
 
@@ -271,24 +296,12 @@ def script_defaults(settings):
     obs.obs_data_set_default_bool(settings, "enabled", True)
 
 
-def on_show_dock(props, prop):
-    global _dock
-    if _dock:
-        _dock.show()
-        _dock.raise_()
-    return True
-
-
 def script_properties():
     props = obs.obs_properties_create()
     obs.obs_properties_add_bool(props, "enabled", "Enable plugin")
     obs.obs_properties_add_text(
         props, "xr18_ip", "XR18 IP Address", obs.OBS_TEXT_DEFAULT
     )
-    if PYQT_AVAILABLE:
-        obs.obs_properties_add_button(
-            props, "btn_show_dock", "Show Dock Interface", on_show_dock
-        )
     return props
 
 
