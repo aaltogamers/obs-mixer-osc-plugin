@@ -5,17 +5,22 @@ OBS Studio Python Script – Behringer XR18 Snapshot Sync via OSC & Native Dock 
 import json
 import socket
 import time
+import sys
 import obspython as obs  # type: ignore
 
+# ---------------------------------------------------------------------------
+# PyQt6 Initialization & Safeguards
+# ---------------------------------------------------------------------------
 try:
-    from PyQt6 import QtWidgets, QtCore, QtGui
+    from PyQt6 import QtWidgets, QtCore
 
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
     obs.script_log(
         obs.LOG_WARNING,
-        "PyQt6 is missing! Native dock will not load. Run: sudo apt install python3-pyqt6",
+        f"PyQt6 is missing from the OBS Python environment!\n"
+        f'Please run: "{sys.executable}" -m pip install PyQt6 python-osc',
     )
 
 from pythonosc import udp_client
@@ -215,6 +220,7 @@ def setup_dock():
 
     app = QtWidgets.QApplication.instance()
     if not app:
+        obs.script_log(obs.LOG_WARNING, "Could not find OBS QApplication instance.")
         return
 
     main_window = None
@@ -253,11 +259,8 @@ def setup_dock():
 # OBS Event Handling
 # ---------------------------------------------------------------------------
 def on_event(event):
-    # Fire when the active scene changes
     if event == obs.OBS_FRONTEND_EVENT_SCENE_CHANGED:
         handle_scene_change()
-
-    # Auto-update the UI when scenes are added, removed, or re-ordered
     elif event == obs.OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED:
         if _dock:
             _dock.populate_ui()
@@ -288,8 +291,8 @@ def script_description():
         "<h2>Behringer XR18 – Snapshot Sync</h2>"
         "<p>Loads an XR18 snapshot whenever the active OBS scene changes.</p>"
         "<hr/>"
-        "<p><strong>Note:</strong> Mappings are now managed via a native OBS Dock. "
-        "You can show or hide it using the <strong>Docks</strong> menu at the top of OBS.</p>"
+        "<p><strong>Note:</strong> Mappings are managed via a native OBS Dock. "
+        "Go to the <strong>Docks</strong> menu at the top of OBS to show/hide it.</p>"
     )
 
 
@@ -316,7 +319,8 @@ def script_update(settings):
     _create_client()
 
     if PYQT_AVAILABLE and _dock is None:
-        setup_dock()
+        # Delay the dock setup slightly to ensure OBS has fully loaded the UI on Windows
+        QtCore.QTimer.singleShot(1000, setup_dock)
 
 
 def script_load(settings):
